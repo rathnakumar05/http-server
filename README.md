@@ -14,4 +14,6 @@ The goal of this project is to understand:
 
 ## 🔧 Build & Run
 
+```bash
 make && ./build/http-server 8080
+```

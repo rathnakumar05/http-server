@@ -10,7 +10,7 @@ The goal of this project is to understand:
 - Basic HTTP request/response handling
 - Event-driven I/O (poll/epoll in future versions)
 - Signal handling
-- Threading for run task in the background
+- Threading to run task in the background
 
 ⚠️ **Note:** This project is still under development and not production-ready.
 

@@ -3,11 +3,17 @@
 
 #include <arpa/inet.h>
 
+#include "config.h"
+#include "http_types.h"
 typedef struct
 {
     int s;
     struct sockaddr_storage client_info;
     socklen_t sin_size;
+    char buff[BUFFER_SIZE];
+    char *raw_http_headers;
+    char *raw_http_body;
+    http_request_line_t request_line;
 } client_connection_t;
 
 #endif

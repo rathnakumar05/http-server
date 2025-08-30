@@ -90,6 +90,7 @@ handle_recv (client_connection_t * client_connection)
 		BUFFER_SIZE - byte_recv_len - 1, 0)) > 0)
     {
       byte_recv_len += bytes_recv;
+      //TODO: implement a proper recv_all function with content-length delimited
       break;
     }
   if (bytes_recv == -1)

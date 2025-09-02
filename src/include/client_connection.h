@@ -16,4 +16,11 @@ typedef struct
     http_request_line_t request_line;
 } client_connection_t;
 
+typedef struct
+{
+    client_connection_t client_connection;
+    int status;
+} client_request_t;
+
+
 #endif

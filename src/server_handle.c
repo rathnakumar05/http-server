@@ -8,6 +8,7 @@
 #include <netdb.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <errno.h>
 
 
 #include "config.h"
@@ -16,12 +17,32 @@
 #include "server_connection.h"
 #include "client_connection.h"
 #include "http_handle.h"
+#include <sys/epoll.h>
+#include <fcntl.h>
+
+//TODO: handle errors
+void
+setnonblocking (int fd)
+{
+  int old_option = fcntl (fd, F_GETFL);
+  int new_option = old_option | O_NONBLOCK;
+
+  fcntl (fd, F_SETFL, new_option);
+}
+
+//TODO: need to refactor
+int epoll_fd;
 
 
 void
 server_connect (server_connection_t * server_connection)
 {
-  printf ("%d", exit_server);
+  epoll_fd = epoll_create1 (0);
+
+  if (epoll_fd == -1)
+    {
+      custom_error_exit ("Error: Failed to epoll instance");
+    }
   int sock_opt = 1;
 
   memset (&server_connection->hint, 0, sizeof server_connection->hint);
@@ -67,6 +88,18 @@ server_connect (server_connection_t * server_connection)
       close (server_connection->s);
       custom_error_exit ("Error: Failed to listen");
     }
+
+  setnonblocking (server_connection->s);
+  struct epoll_event ep_event;
+  ep_event.events = EPOLLIN | EPOLLET;
+  ep_event.data.fd = server_connection->s;
+
+  if (epoll_ctl (epoll_fd, EPOLL_CTL_ADD, server_connection->s, &ep_event) ==
+      -1)
+    {
+      close (server_connection->s);
+      custom_error_exit ("Error: Failed to add listen fd in epoll");
+    }
 }
 
 void *
@@ -80,25 +113,37 @@ get_in_addr (struct sockaddr *sa)
   return &(((struct sockaddr_in6 *) sa)->sin6_addr);
 }
 
-void
+int
 handle_recv (client_connection_t * client_connection)
 {
   int byte_recv_len = 0;
   int bytes_recv = 0;
-  while ((bytes_recv =
-	  recv (client_connection->s, client_connection->buff + byte_recv_len,
-		BUFFER_SIZE - byte_recv_len - 1, 0)) > 0)
+  while (1)
     {
+      bytes_recv =
+	recv (client_connection->s, client_connection->buff + byte_recv_len,
+	      BUFFER_SIZE - byte_recv_len - 1, 0);
+      if (bytes_recv == -1)
+	{
+	  if (errno == EAGAIN || errno == EWOULDBLOCK)
+	    {
+	      break;
+	    }
+	  else
+	    {
+	      perror ("Error: Failed to read client data");
+	      return -1;
+	    }
+	}
+      else if (bytes_recv == 0)
+	{
+	  break;
+	}
       byte_recv_len += bytes_recv;
-      //TODO: implement a proper recv_all function with content-length delimited
-      break;
-    }
-  if (bytes_recv == -1)
-    {
-      close (client_connection->s);
-      custom_error_exit ("Error: Failed to recv from client");
     }
   client_connection->buff[byte_recv_len] = '\0';
+  printf ("%s", client_connection->buff);
+  return 0;
 }
 
 int
@@ -108,13 +153,30 @@ send_all (int s, char *buff, size_t buff_len)
   size_t bytes_left = buff_len;
   size_t bytes_sent = 0;
 
-  while ((bytes_sent = send (s, buff + bytes_sent_total, bytes_left, 0)) > 0)
+  while (1)
     {
-      bytes_left -= bytes_sent;
-      bytes_sent_total += bytes_sent;
+      bytes_sent = send (s, buff + bytes_sent_total, bytes_left, 0);
+      if (bytes_left == -1)
+	{
+	  if (errno == EAGAIN || errno == EWOULDBLOCK)
+	    {
+	      break;
+	    }
+	  else
+	    {
+	      return -1;
+	    }
+	}
+      else if (bytes_left == 0)
+	{
+	  break;
+	}
+      else
+	{
+	  bytes_left -= bytes_sent;
+	  bytes_sent_total += bytes_sent;
+	}
     }
-  if (bytes_sent == -1)
-    return -1;
 
   return 0;
 }
@@ -187,7 +249,7 @@ get_mime_type (const char *path)
 }
 
 
-void
+int
 http_response (client_connection_t * client_connection, char *path)
 {
   int status_code = 200;
@@ -195,7 +257,6 @@ http_response (client_connection_t * client_connection, char *path)
   size_t file_size;
   if (access (path, F_OK) == 0)
     {
-      printf ("Hello\n");
       f = fopen (path, "rb");
       if (f == NULL)
 	{
@@ -256,35 +317,42 @@ http_response (client_connection_t * client_connection, char *path)
 
   if (send_all (client_connection->s, buff, strlen (buff)) == -1)
     {
-      close (client_connection->s);
-      custom_error_exit ("Server: Failed to send file");
+      printf ("Server: Failed to send file\n");
+      return -1;
     }
-
-  if (status_code == 200)
+  else
     {
-      char chunk[BUFFER_1K];
-      size_t file_bytes_read;
-
-      while ((file_bytes_read = fread (chunk, 1, sizeof chunk, f)) > 0)
+      if (status_code == 200)
 	{
-	  if (send_all (client_connection->s, chunk, file_bytes_read) == -1)
+	  char chunk[BUFFER_1K];
+	  size_t file_bytes_read;
+
+	  while ((file_bytes_read = fread (chunk, 1, sizeof chunk, f)) > 0)
 	    {
-	      close (client_connection->s);
-	      custom_error_exit ("Server: Failed to send file");
+	      if (send_all (client_connection->s, chunk, file_bytes_read) ==
+		  -1)
+		{
+		  fclose (f);
+		  printf ("Server: Failed to send file\n");
+		  return -1;
+		}
+	    }
+
+	  if (ferror (f))
+	    {
+	      fclose (f);
+	      printf ("Server: Failed to read file\n");
+	      return -1;
 	    }
 	}
-
-      if (ferror (f))
-	{
-	  close (client_connection->s);
-	  custom_error_exit ("Server: Failed to read file");
-	}
     }
+
+  return 0;
 
 }
 
 
-void
+int
 handle_send (client_connection_t * client_connection)
 {
   char path[BUFFER_2K];
@@ -302,7 +370,47 @@ handle_send (client_connection_t * client_connection)
     }
 
   printf ("Server: path [%s]\n", path);
-  http_response (client_connection, path);
+  return http_response (client_connection, path);
+}
+
+void
+handle_request (client_request_t * client_request)
+{
+  if (client_request->status == RECV)
+    {
+      if (handle_recv (&client_request->client_connection) != -1)
+	{
+	  printf ("Server: Received data %s\n",
+		  client_request->client_connection.buff);
+	  if (parse_http_request (&client_request->client_connection) == -1)
+	    {
+	      printf ("Error: Failed to parse HTTP request \n");
+	      client_request->status = CLOSE;
+	    }
+	  else
+	    {
+	      printf ("Server: Received data %s\n",
+		      client_request->client_connection.buff);
+	      printf ("Server: method [%s] path [%s]\n",
+		      client_request->client_connection.request_line.method,
+		      client_request->client_connection.request_line.path);
+	      client_request->status = SEND;
+	    }
+
+	}
+      else
+	{
+	  printf
+	    ("Error: Due to handle_recv failure, client connection is closed\n");
+	  client_request->status = CLOSE;
+	}
+    }
+  else if (client_request->status == SEND)
+    {
+      handle_send (&client_request->client_connection);
+      client_request->status = CLOSE;
+    }
+
 }
 
 void
@@ -311,45 +419,119 @@ start_server (server_connection_t * server_connection)
   printf ("Server: 🚀 Started to run at port %s 🚀\n", PORT);
   printf ("Server: ⏳ Waiting for connection! ⏳\n");
 
+  struct epoll_event *events =
+    (struct epoll_event *) malloc (sizeof (struct epoll_event) * MAX_EVENTS);
+  if (events == NULL)
+    {
+      close (server_connection->s);
+      custom_error_exit ("Server: Failed to malloc events");
+    }
+  struct epoll_event ep_event;
   char ip[INET6_ADDRSTRLEN];
   client_connection_t client_connection;
+  int fds;
   while (exit_server == false)
     {
-      client_connection.sin_size = sizeof client_connection.client_info;
-      client_connection.s =
-	accept (server_connection->s,
-		(struct sockaddr *) &client_connection.client_info,
-		&client_connection.sin_size);
+      fds = epoll_wait (epoll_fd, events, MAX_EVENTS, -1);
 
-      if (client_connection.s == -1)
-	{
-	  perror ("Failed to accept client");
-	  continue;
-	}
-
-      inet_ntop (client_connection.client_info.ss_family,
-		 get_in_addr ((struct sockaddr *)
-			      &client_connection.client_info), ip, sizeof ip);
-      printf ("Server: got connection from %s\n", ip);
-
-      if (!fork ())
+      if (fds == -1)
 	{
 	  close (server_connection->s);
-	  handle_recv (&client_connection);
-	  printf ("Server: Received data %s\n", client_connection.buff);
-	  if (parse_http_request (&client_connection) == -1)
-	    {
-	      close (client_connection.s);
-	      custom_error_exit ("Failed to parse HTTP request \n");
-	    }
-	  printf ("Server: method [%s] path [%s]\n",
-		  client_connection.request_line.method,
-		  client_connection.request_line.path);
-	  handle_send (&client_connection);
-	  close (client_connection.s);
-	  exit (EXIT_SUCCESS);
+	  custom_error_exit ("Server: Failed to epoll_wait");
 	}
-      close (client_connection.s);
+
+      for (int i = 0; i < fds; i++)
+	{
+	  if (events[i].data.fd == server_connection->s)
+	    {
+	      while (1)
+		{
+		  client_connection.sin_size =
+		    sizeof client_connection.client_info;
+		  client_connection.s =
+		    accept (server_connection->s,
+			    (struct sockaddr *)
+			    &client_connection.client_info,
+			    &client_connection.sin_size);
+
+		  if (client_connection.s < 0)
+		    {
+		      if (errno == EAGAIN | errno == EWOULDBLOCK)
+			{
+			  break;
+			}
+		      else
+			{
+			  perror ("Server: Failed to accept client");
+			  break;
+			}
+		    }
+		  inet_ntop (client_connection.client_info.ss_family,
+			     get_in_addr ((struct sockaddr *)
+					  &client_connection.client_info), ip,
+			     sizeof ip);
+		  printf ("Server: got connection from %s\n", ip);
+		  setnonblocking (client_connection.s);
+
+		  ep_event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+		  client_request_t *client_request =
+		    (client_request_t *) malloc (sizeof (client_request_t));
+		  if (client_request == NULL)
+		    {
+		      //TODO handle error
+		      custom_error_exit
+			("Error: failed to malloc client_request");
+		    }
+		  client_request->client_connection = client_connection;
+		  client_request->status = RECV;
+		  ep_event.data.ptr = client_request;
+		  if (epoll_ctl
+		      (epoll_fd, EPOLL_CTL_ADD, client_connection.s,
+		       &ep_event) == -1)
+		    {
+		      perror ("epoll_ctl");
+		      continue;
+		    }
+
+		}
+	    }
+	  else
+	    {
+	      client_request_t *client_request =
+		(client_request_t *) events[i].data.ptr;
+	      handle_request (client_request);
+	      if (client_request->status == RECV)
+		{
+		  ep_event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+		  ep_event.data.ptr = client_request;
+		  if (epoll_ctl
+		      (epoll_fd, EPOLL_CTL_MOD,
+		       client_request->client_connection.s, &ep_event) < 0)
+		    {
+		      perror ("Error: Failed to epoll_ctl");
+		      continue;
+		    }
+		}
+	      else if (client_request->status == SEND)
+		{
+		  ep_event.events = EPOLLOUT | EPOLLET | EPOLLONESHOT;
+		  ep_event.data.ptr = client_request;
+		  if (epoll_ctl
+		      (epoll_fd, EPOLL_CTL_MOD,
+		       client_request->client_connection.s, &ep_event) < 0)
+		    {
+		      perror ("epoll_ctl");
+		      continue;
+		    }
+		}
+	      else if (client_request->status == CLOSE)
+		{
+		  printf ("Server: closing client connection\n");
+		  close (client_request->client_connection.s);
+		  free (client_request);
+		}
+	    }
+	}
     }
 }
 

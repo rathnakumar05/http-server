@@ -9,5 +9,10 @@
 #define BUFFER_1K 1024
 #define BUFFER_2K 2048
 #define FOLDER_NAME "./ht_docs"
+#define MAX_EVENTS 1024
+
+#define RECV 0
+#define SEND 1
+#define CLOSE 2
 
 #endif

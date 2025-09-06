@@ -4,5 +4,7 @@
 #include <stdbool.h>
 
 extern bool exit_server;
+extern void * client_tree;
+extern char * port;
 
 #endif

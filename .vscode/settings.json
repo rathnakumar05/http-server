@@ -7,20 +7,4 @@
         }
       ]
     },
-    "files.associations": {
-      "cstdlib": "c",
-      "errno.h": "c",
-      "netdb.h": "c",
-      "inet.h": "c",
-      "stdio.h": "c",
-      "string.h": "c",
-      "types.h": "c",
-      "socket.h": "c",
-      "client_connection.h": "c",
-      "server_connection.h": "c",
-      "error_handle.h": "c",
-      "server_handle.h": "c",
-      "http_handle.h": "c",
-      "config.h": "c"
-    }
   }

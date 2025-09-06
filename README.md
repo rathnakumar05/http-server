@@ -49,6 +49,5 @@ ab -n 1000 -c 50 http://127.0.0.1:8080/
 
 - Default port: **8080** (override with `-p`).
 - Use `Ctrl+C` to stop the server.
-- Avoid running as root.
 
 ---
